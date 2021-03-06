@@ -10,7 +10,9 @@
 //每个事务都有一个ConcurrencyMgr
 class ConcurrencyMgr {
 public:
-	ConcurrencyMgr(){}
+	ConcurrencyMgr(LockTable* ltable){
+		this->locktbl = ltable;
+	}
 	~ConcurrencyMgr(){}
 
 	bool sLock(BlockId* blk) {
@@ -21,7 +23,22 @@ public:
 				return true;
 			}
 		}
-		return false;
+		return true;
+	}
+
+	bool xLock(BlockId* blk) {
+		if (!hasXLock(blk)) {
+			sLock(blk);
+			bool succ = locktbl->xLock(blk);
+			if (succ) {
+				locks[blk]="X";
+			}
+			else {
+				return false;
+			}
+			return true;
+		}
+		return true;
 	}
 
 	void release() {
@@ -36,7 +53,7 @@ private:
 	}
 private:
 	//所有的事务共享同一个LockTable
-	static LockTable* locktbl;
+	LockTable* locktbl;
 	std::unordered_map<BlockId*, std::string> locks;
 };
 #endif // !__CONCURRENCY_MGR_H__

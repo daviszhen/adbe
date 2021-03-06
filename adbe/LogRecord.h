@@ -6,6 +6,7 @@
 #include "bytebuffer.h"
 #include "LogMgr.h"
 #include "blockid.h"
+#include "Transaction.h"
 
 class Transaction;
 class CheckpointRecord;
@@ -144,8 +145,8 @@ public:
         int tpos = sizeof(int);
         txnum = p->getInt(tpos);
         int fpos = tpos + sizeof(int);
-        std::string filename = p->getString(fpos);
-        int bpos = fpos + Page::maxLength(filename.size());
+        std::string filename = p->getString(static_cast<int>(fpos));
+        int bpos = fpos + Page::maxLength(static_cast<int>(filename.size()));
         int blknum = p->getInt(bpos);
         blk = BlockId::New(filename, blknum);
         int opos = bpos + sizeof(int);
@@ -171,11 +172,7 @@ public:
     }
 
     //撤销日志记录中的操作
-    void undo(Transaction* tx) {
-        //tx->pin(blk);
-        //tx->setInt(blk, offset, val, false); // don't log the undo!
-        //tx->unpin(blk);
-    }
+    void undo(Transaction* tx);
 
     static int writeToLog(LogMgr* lm, int txnum, BlockId* blk, int offset, int val) {
         int tpos = sizeof(int);
@@ -234,11 +231,7 @@ public:
         return "<SETSTRING " + std::to_string(txnum) + " " + blk->to_str() + " " + std::to_string(offset) + " " + val + ">";
     }
 
-    void undo(Transaction* tx) {
-        //tx->pin(blk);
-        //tx->setString(blk, offset, val, false); // don't log the undo!
-        //tx->unpin(blk);
-    }
+    void undo(Transaction* tx);
 
     static int writeToLog(LogMgr* lm, int txnum, BlockId* blk, int offset, const std::string& val) {
         int tpos = sizeof(int);
@@ -301,26 +294,4 @@ private:
     int txnum;
 };
 
-LogRecord* LogRecord::createLogRecord(ByteBuffer* bytes) {
-    Page* p = Page::New(bytes);
-    int type = p->getInt(0);
-    switch (type)
-    {
-    case CHECKPOINT:
-        return new CheckpointRecord();
-    case START:
-        return new StartRecord(p);
-    case COMMIT:
-        return new CommitRecord(p);
-    case ROLLBACK:
-        return new RollbackRecord(p);
-    case SETINT:
-        return new SetIntRecord(p);
-    case SETSTRING:
-        return new SetStringRecord(p);
-    default:
-        return nullptr;
-    }
-    return nullptr;
-}
 #endif // !__LOG_RECORD_H__

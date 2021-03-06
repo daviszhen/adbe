@@ -332,6 +332,328 @@ void testPrintLogFile() {
     }
 }
 
+void printValues(const std::string& msg, FileMgr* fm, BlockId* blk0, BlockId* blk1) {
+    sql_print_information("%s\n",msg.c_str());
+    Page* p0 = Page::New(fm->blockSize());
+    Page* p1 = Page::New(fm->blockSize());
+    fm->read(*blk0, *p0);
+    fm->read(*blk1, *p1);
+    int pos = 0;
+    for (int i = 0; i < 6; i++) {
+        sql_print_information("%d ",p0->getInt(pos));
+        sql_print_information("%d ",p1->getInt(pos));
+        pos += sizeof(int);
+    }
+    sql_print_information("%s",p0->getString(30).c_str());
+    sql_print_information("%s",p1->getString(30).c_str());
+    sql_print_information("\n");
+}
+
+void initialize(FileMgr* fm, LogMgr* lm, BufferMgr* bm, BlockId* blk0, BlockId* blk1, LockTable* locktbl) {
+    Transaction* tx1 = new Transaction(fm,lm,bm,locktbl);
+    Transaction* tx2 = new Transaction(fm,lm,bm,locktbl);
+    assert(tx1->pin(blk0));
+    assert(tx2->pin(blk1));
+    int pos = 0;
+    for (int i = 0; i < 6; i++) {
+        assert(tx1->setInt(blk0, pos, pos, false) == TX_SUCC);
+        assert(tx2->setInt(blk1, pos, pos, false) == TX_SUCC);
+        pos += sizeof(int);
+    }
+    assert(tx1->setString(blk0, 30, "abc", false) == TX_SUCC);
+    assert(tx2->setString(blk1, 30, "def", false) == TX_SUCC);
+    tx1->commit();
+    tx2->commit();
+    printValues("After Initialization:",fm,blk0,blk1);
+    delete tx1;
+    delete tx2;
+}
+
+void modify(FileMgr* fm, LogMgr* lm, BufferMgr* bm, BlockId* blk0, BlockId* blk1, LockTable* locktbl) {
+    Transaction* tx3 = new Transaction(fm, lm, bm,locktbl);
+    Transaction* tx4 = new Transaction(fm, lm, bm,locktbl);
+    assert(tx3->pin(blk0));
+    assert(tx4->pin(blk1));
+    int pos = 0;
+    for (int i = 0; i < 6; i++) {
+        assert(tx3->setInt(blk0, pos, pos + 100, true) == TX_SUCC);
+        assert(tx4->setInt(blk1, pos, pos + 100, true) == TX_SUCC);
+        pos += sizeof(int);
+    }
+    assert(tx3->setString(blk0, 30, "uvw", true) == TX_SUCC);
+    assert(tx4->setString(blk1, 30, "xyz", true) == TX_SUCC);
+    bm->flushAll(3);
+    bm->flushAll(4);
+    printValues("After modification:", fm, blk0, blk1);
+
+    tx3->rollback();
+    printValues("After rollback:", fm, blk0, blk1);
+    // tx4 stops here without committing or rolling back,
+    // so all its changes should be undone during recovery.
+    delete tx3;
+    delete tx4;
+}
+
+void recover(FileMgr* fm, LogMgr* lm, BufferMgr* bm, BlockId* blk0, BlockId* blk1, LockTable* locktbl) {
+    Transaction* tx = new Transaction(fm, lm, bm, locktbl);
+    tx->recover();
+    printValues("After recovery:",fm,blk0,blk1);
+    delete tx;
+}
+
+void testRecovery() {
+    int blocksize = 400;
+    LockTable* locktbl = new LockTable();
+    FileMgr* fm = FileMgr::New(blocksize);
+    LogMgr* lm = LogMgr::New(fm, "simpledb.log");
+    BufferMgr* bm = BufferMgr::New(fm, lm, 8);
+    std::string filename = "simpledb.log";
+
+    BlockId *blk0, *blk1;
+
+    blk0 = BlockId::New("testfile", 0);
+    blk1 = BlockId::New("testfile", 1);
+
+    if (fm->length("testfile") == 0) {
+        initialize(fm,lm,bm,blk0,blk1,locktbl);
+        modify(fm, lm, bm, blk0, blk1,locktbl);
+    }
+    else {
+        recover(fm, lm, bm, blk0, blk1, locktbl);
+    }
+
+    delete fm;
+    delete lm;
+    delete bm;
+    delete locktbl;
+}
+
+void testTx() {
+    int blocksize = 400;
+    LockTable* locktbl = new LockTable();
+    FileMgr* fm = FileMgr::New(blocksize);
+    LogMgr* lm = LogMgr::New(fm, "simpledb.log");
+    BufferMgr* bm = BufferMgr::New(fm, lm, 8);
+
+    Transaction* tx1 = new Transaction(fm, lm, bm,locktbl);
+    BlockId* blk = BlockId::New("testfile", 1);
+    assert(tx1->pin(blk));
+    // The block initially contains unknown bytes,
+    // so don't log those values here.
+    assert(tx1->setInt(blk, 80, 1, false) == TX_SUCC);
+    assert(tx1->setString(blk, 40, "one", false) == TX_SUCC);
+    tx1->commit();
+
+    Transaction* tx2 = new Transaction(fm, lm, bm,locktbl);
+    assert(tx2->pin(blk));
+    int ival;
+    assert(tx2->getInt(blk, 80,ival) == TX_SUCC);
+    std::string sval;
+    assert(tx2->getString(blk, 40,sval) == TX_SUCC);
+    sql_print_information("initial value at location 80 = %d\n",ival);
+    sql_print_information("initial value at location 40 = %s\n",sval.c_str());
+    int newival = ival + 1;
+    std::string newsval = sval + "!";
+    assert(tx2->setInt(blk, 80, newival, true) == TX_SUCC);
+    assert(tx2->setString(blk, 40, newsval, true) == TX_SUCC);
+    tx2->commit();
+    Transaction* tx3 = new Transaction(fm, lm, bm, locktbl);
+    assert(tx3->pin(blk));
+    int i80;
+    assert(tx3->getInt(blk, 80,i80) == TX_SUCC);
+    std::string i40;
+    assert(tx3->getString(blk, 40,i40) == TX_SUCC);
+    sql_print_information("new value at location 80 = %d\n",i80);
+    sql_print_information("new value at location 40 = %s\n",i40.c_str());
+    assert(tx3->setInt(blk, 80, 9999, true) == TX_SUCC);
+    assert(tx3->getInt(blk, 80, i80) == TX_SUCC);
+    sql_print_information("pre-rollback value at location 80 = %d\n",i80);
+    tx3->rollback();
+
+    Transaction* tx4 = new Transaction(fm, lm, bm, locktbl);
+    assert(tx4->pin(blk));
+
+    assert(tx4->getInt(blk, 80,i80) == TX_SUCC);
+    sql_print_information("post-rollback at location 80 = %d\n", i80);
+    tx4->commit();
+
+    delete fm;
+    delete lm;
+    delete bm;
+    delete locktbl;
+    delete tx1;
+    delete tx2;
+    delete tx3;
+    delete tx4;
+}
+
+struct ConcurrencyArgs {
+    LockTable* locktbl;
+    FileMgr* fm;
+    LogMgr* lm;
+    BufferMgr* bm;
+};
+
+void* thread_a_body(void* p) {
+    ConcurrencyArgs* args = (ConcurrencyArgs*)p;
+    Transaction* txA = new Transaction(args->fm, args->lm, args->bm,args->locktbl);
+    BlockId* blk1 = BlockId::New("testfile", 1);
+    BlockId* blk2 = BlockId::New("testfile", 2);
+    if (!txA->pin(blk1)) {
+        sql_print_error("txA pin blk1 failed\n");
+        return nullptr;
+    }
+    if (!txA->pin(blk2)) {
+        sql_print_error("txA pin blk2 failed\n");
+        return nullptr;
+    }
+    sql_print_information("Tx A: request slock 1\n");
+    int i0;
+    TransStatus ret = txA->getInt(blk1, 0, i0);
+    if (ret != TX_SUCC) {
+        sql_print_error("txA getInt from blk1 failed\n");
+        return nullptr;
+    }
+    sql_print_information("Tx A: receive slock 1\n");
+    sleep(2);
+    sql_print_information("Tx A: request slock 2\n");
+    ret = txA->getInt(blk2, 0,i0);
+    if (ret != TX_SUCC) {
+        sql_print_error("txA getInt from blk2 failed\n");
+        return nullptr;
+    }
+    sql_print_information("Tx A: receive slock 2\n");
+    txA->commit();
+    sql_print_information("Tx A: commit\n");
+    delete txA;
+}
+
+void* thread_b_body(void* p) {
+    ConcurrencyArgs* args = (ConcurrencyArgs*)p;
+    Transaction* txB = new Transaction(args->fm, args->lm, args->bm, args->locktbl);
+    BlockId* blk1 = BlockId::New("testfile", 1);
+    BlockId* blk2 = BlockId::New("testfile", 2);
+    if (!txB->pin(blk1)) {
+        sql_print_error("txB pin blk1 failed\n");
+        return nullptr;
+    }
+    if (!txB->pin(blk2)) {
+        sql_print_error("txB pin blk2 failed\n");
+        return nullptr;
+    }
+    sql_print_information("Tx B: request xlock 2\n");
+    TransStatus ret = txB->setInt(blk2, 0, 0, false);
+    if (ret != TX_SUCC) {
+        sql_print_error("txB setInt in blk2 failed\n");
+        return nullptr;
+    }
+    sql_print_information("Tx B: receive xlock 2\n");
+    sleep(2);
+    sql_print_information("Tx B: request slock 1\n");
+    int i0;
+    ret = txB->getInt(blk1, 0,i0);
+    if (ret != TX_SUCC) {
+        sql_print_error("txB getInt from blk1 failed\n");
+        return nullptr;
+    }
+    sql_print_information("Tx B: receive slock 1\n");
+    txB->commit();
+    sql_print_information("Tx B: commit\n");
+}
+
+void* thread_c_body(void* p) {
+    ConcurrencyArgs* args = (ConcurrencyArgs*)p;
+    Transaction* txC = new Transaction(args->fm, args->lm, args->bm, args->locktbl);
+    BlockId* blk1 = BlockId::New("testfile", 1);
+    BlockId* blk2 = BlockId::New("testfile", 2);
+    if(!txC->pin(blk1)) {
+        sql_print_error("txC pin blk1 failed\n");
+        return nullptr;
+    }
+    if(!txC->pin(blk2)) {
+        sql_print_error("txC pin blk1 failed\n");
+        return nullptr;
+    }
+    sleep(1);
+    sql_print_information("Tx C: request xlock 1\n");
+    TransStatus ret = txC->setInt(blk1, 0, 0, false);
+    if (ret != TX_SUCC) {
+        sql_print_error("txC setInt in blk1 failed\n");
+        return nullptr;
+    }
+    sql_print_information("Tx C: receive xlock 1\n");
+    sleep(1);
+    sql_print_information("Tx C: request slock 2\n");
+    int i0;
+    ret = txC->getInt(blk2, 0,i0);
+    if (ret != TX_SUCC) {
+        sql_print_error("txC getInt from blk2 failed\n");
+        return nullptr;
+    }
+    sql_print_information("Tx C: receive slock 2\n");
+    txC->commit();
+    sql_print_information("Tx C: commit\n");
+}
+
+void testConcurrency() {
+    int blocksize = 400;
+    LockTable* locktbl = new LockTable();
+    FileMgr* fm = FileMgr::New(blocksize);
+    LogMgr* lm = LogMgr::New(fm, "simpledb.log");
+    BufferMgr* bm = BufferMgr::New(fm, lm, 8);
+
+    ConcurrencyArgs args;
+    args.locktbl = locktbl;
+    args.fm = fm;
+    args.lm = lm;
+    args.bm = bm;
+
+    my_thread_attr_t a_attr;
+    my_thread_attr_t b_attr;
+    my_thread_attr_t c_attr;
+
+    my_thread_attr_init(&a_attr);
+    my_thread_attr_setdetachstate(&a_attr, MY_THREAD_CREATE_JOINABLE);
+
+    my_thread_attr_init(&b_attr);
+    my_thread_attr_setdetachstate(&b_attr, MY_THREAD_CREATE_JOINABLE);
+
+    my_thread_attr_init(&c_attr);
+    my_thread_attr_setdetachstate(&c_attr, MY_THREAD_CREATE_JOINABLE);
+    
+    my_thread_handle thread_a;
+    my_thread_handle thread_b;
+    my_thread_handle thread_c;
+
+    if (my_thread_create(&thread_a, &a_attr, thread_a_body,&args) != 0)
+    {
+        fprintf(stderr, "Could not create thread a!\n");
+        exit(0);
+    }
+
+    if (my_thread_create(&thread_b, &b_attr, thread_b_body, &args) != 0)
+    {
+        fprintf(stderr, "Could not create thread b!\n");
+        exit(0);
+    }
+
+    if (my_thread_create(&thread_c, &c_attr, thread_c_body, &args) != 0)
+    {
+        fprintf(stderr, "Could not create thread c!\n");
+        exit(0);
+    }
+
+    void* dummy;
+    my_thread_join(&thread_a, &dummy);
+    my_thread_join(&thread_b, &dummy);
+    my_thread_join(&thread_c, &dummy);
+
+    delete fm;
+    delete lm;
+    delete bm;
+    delete locktbl;
+}
+
 #ifdef HAVE_PSI_INTERFACE
 static PSI_mutex_key adbe_logMgr_mutex;
 
@@ -373,14 +695,20 @@ static int example_init_func(void *p)
   example_hton->system_database=   example_system_database;
   example_hton->is_supported_system_table= example_is_supported_system_table;
 
+  Transaction::init();
+
   //Ö´ÐÐ²âÊÔÄ£¿é
-  testFileMgr();
-  testLogMgr();
-  testBuffer();
-  testBufferFile();
-  testBufferMgr();
+  //testFileMgr();
+  //testLogMgr();
+  //testBuffer();
+  //testBufferFile();
+  //testBufferMgr();
+  testRecovery();
+  testTx();
+  testConcurrency();
   testPrintLogFile();
 
+  Transaction::deinit();
   DBUG_RETURN(0);
 }
 
