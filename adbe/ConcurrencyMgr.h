@@ -22,6 +22,9 @@ public:
 				locks[blk]= "S";
 				return true;
 			}
+			else {
+				return false;
+			}
 		}
 		return true;
 	}

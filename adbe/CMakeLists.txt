@@ -17,10 +17,10 @@ SET(ADBE_PLUGIN_STATIC "adbe")
 SET(ADBE_PLUGIN_MANDATORY  TRUE)
 
 SET(EXAMPLE_SOURCES Transaction.cpp LogRecord.cpp RecoveryMgr.cpp ConcurrencyMgr.cpp
-	ha_example.cc 
+	ha_example.cc RecordPage.cpp
 	blockid.h Buffer.h BufferList.h BufferMgr.h bytebuffer.h ConcurrencyMgr.h 
-	FileMgr.h ha_example.h LockTable.h LogIterator.h LogMgr.h LogRecord.h 
-	RecoveryMgr.h Transaction.h page.h)
+	FileMgr.h ha_example.h Layout.h LockTable.h LogIterator.h LogMgr.h LogRecord.h 
+	RecordPage.h RecoveryMgr.h Transaction.h page.h Schema.h)
 #IF(WITH_ADBE_STORAGE_ENGINE AND NOT WITHOUT_ADBE_STORAGE_ENGINE)
   MYSQL_ADD_PLUGIN(adbe ${EXAMPLE_SOURCES} STORAGE_ENGINE MANDATORY RECOMPILE_FOR_EMBEDDED)
 #ELSEIF(NOT WITHOUT_ADBE_STORAGE_ENGINE)

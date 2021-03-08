@@ -8,9 +8,14 @@
 class ByteBuffer {
 public:
 	ByteBuffer(int cap) {
-		assert(cap > 0);
+		assert(cap >= 0);
 		capacity = cap;
-		buffer = new char[cap];
+		if (cap == 0) {
+			buffer = new char[1];
+		}
+		else {
+			buffer = new char[cap];
+		}
 	}
 	ByteBuffer(char* buf, int cap) {
 		assert(buf != nullptr && cap > 0);

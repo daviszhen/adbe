@@ -47,7 +47,7 @@ public:
 
 	std::unique_ptr<ByteBuffer> getBytes(int offset) {
 		int length = bb->getInt(offset);
-		assert(length > 0);
+		assert(length >= 0);
 		ByteBuffer* tbb = ByteBuffer::New(length);
 		assert(tbb != nullptr);
 		bb->get(offset+sizeof(int),tbb->getBuffer(), length);
@@ -56,7 +56,9 @@ public:
 
 	void setBytes(int offset, const char* b, int blen) {
 		bb->putInt(offset, blen);
-		bb->put(offset + sizeof(int), b, blen);
+		if (blen > 0) {
+			bb->put(offset + sizeof(int), b, blen);
+		}
 	}
 
 	std::string getString(int offset) {

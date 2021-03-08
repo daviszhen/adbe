@@ -98,6 +98,10 @@
 #include "Buffer.h"
 #include "BufferMgr.h"
 #include "LogRecord.h"
+#include "Schema.h"
+#include "Layout.h"
+#include "RecordPage.h"
+
 #include <mysql/thread_pool_priv.h>
 
 static handler *example_create_handler(handlerton *hton,
@@ -654,6 +658,87 @@ void testConcurrency() {
     delete locktbl;
 }
 
+void testLayout() {
+    Schema sch;
+    sch.addIntField("A");
+    sch.addStringField("B", 9);
+    Layout layout(sch);
+    for (const std::string fldname : layout.schema().fields()) {
+        int offset = layout.offset(fldname);
+        sql_print_information("%s has offset %d\n",fldname.c_str(),offset);
+    }
+}
+
+void testRecord() {
+    int blocksize = 400;
+    LockTable* locktbl = new LockTable();
+    FileMgr* fm = FileMgr::New(blocksize);
+    LogMgr* lm = LogMgr::New(fm, "simpledb.log");
+    BufferMgr* bm = BufferMgr::New(fm, lm, 8);
+
+    Transaction* tx = new Transaction(fm,lm,bm,locktbl);
+
+    Schema* sch = new Schema();
+    sch->addIntField("A");
+    sch->addStringField("B", 9);
+    Layout* layout = new Layout(*sch);
+    for (const std::string fldname : layout->schema().fields()) {
+        int offset = layout->offset(fldname);
+        sql_print_information("%s has offset %d\n",fldname.c_str(),offset);
+    }
+    BlockId* blk;
+    assert(tx->append("testfile",blk)  == TX_SUCC);
+    assert(tx->pin(blk));
+    RecordPage* rp = new RecordPage(tx, blk, layout);
+    assert(rp->format());
+
+    sql_print_information("Filling the page with random records.\n");
+    int slot = rp->insertAfter(-1);
+    assert(slot >= 0);
+    while (slot >= 0) {
+        int n = 1 + rand() % 50;
+        assert(rp->setInt(slot, "A", n));
+        assert(rp->setString(slot, "B", "rec" + std::to_string(n)));
+        sql_print_information("inserting into slot %d: { %d, rec%d}\n", slot,n,n);
+        slot = rp->insertAfter(slot);
+    }
+
+    sql_print_information("Deleting these records, whose A-values are less than 25.\n");
+    int count = 0;
+    slot = rp->nextAfter(-1);
+    while (slot >= 0) {
+        int a;
+        assert(rp->getInt(slot, "A",a));
+        std::string b;
+        assert(rp->getString(slot, "B",b));
+        if (a < 25) {
+            count++;
+            sql_print_information("slot %d: {%d, %s}\n", slot,a,b.c_str());
+            assert(rp->remove(slot));
+        }
+        slot = rp->nextAfter(slot);
+    }
+    sql_print_information("%d values under 25 were deleted.\n", count);
+
+    sql_print_information("Here are the remaining records.\n");
+    slot = rp->nextAfter(-1);
+    while (slot >= 0) {
+        int a;
+        assert(rp->getInt(slot, "A",a));
+        std::string b;
+        assert(rp->getString(slot, "B",b));
+        sql_print_information("slot %d: {%d, %s}\n",slot,a,b.c_str());
+        slot = rp->nextAfter(slot);
+    }
+    tx->unpin(blk);
+    tx->commit();
+
+    delete fm;
+    delete lm;
+    delete bm;
+    delete locktbl;
+}
+
 #ifdef HAVE_PSI_INTERFACE
 static PSI_mutex_key adbe_logMgr_mutex;
 
@@ -703,10 +788,12 @@ static int example_init_func(void *p)
   //testBuffer();
   //testBufferFile();
   //testBufferMgr();
-  testRecovery();
-  testTx();
-  testConcurrency();
-  testPrintLogFile();
+  //testRecovery();
+  //testTx();
+  //testConcurrency();
+  //testPrintLogFile();
+  //testLayout();
+  testRecord();
 
   Transaction::deinit();
   DBUG_RETURN(0);
