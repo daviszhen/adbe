@@ -101,6 +101,15 @@
 #include "Schema.h"
 #include "Layout.h"
 #include "RecordPage.h"
+#include "Scan.h"
+#include "TableMgr.h"
+#include "MetadataMgr.h"
+#include "Term.h"
+#include "SelectScan.h"
+#include "TablePlan.h"
+#include "SelectPlan.h"
+#include "ProjectPlan.h"
+#include "ProductPlan.h"
 
 #include <mysql/thread_pool_priv.h>
 

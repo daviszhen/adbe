@@ -20,12 +20,10 @@ public:
     }
 
     Layout(const Schema& schema, 
-        const std::unordered_map<const std::string, int>& offsets, 
+        const std::unordered_map<std::string, int>& offsets, 
         int slotsize){
         this->scha = schema;
-        for (auto pr : this->offsets) {
-            this->offsets[pr.first] = pr.second;
-        }
+        this->offsets = offsets;
         this->slotsize = slotsize;
     }
 
