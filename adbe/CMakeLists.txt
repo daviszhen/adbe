@@ -17,12 +17,17 @@ SET(ADBE_PLUGIN_STATIC "adbe")
 SET(ADBE_PLUGIN_MANDATORY  TRUE)
 
 SET(EXAMPLE_SOURCES Transaction.cpp LogRecord.cpp RecoveryMgr.cpp ConcurrencyMgr.cpp
-	ha_example.cc MetadataMgr.cpp Predicate.cpp ProductPlan.cpp ProjectPlan.cpp 
+	ha_example.cc Lexer.cpp MetadataMgr.cpp Parser.cpp Predicate.cpp ProductPlan.cpp 
+	ProjectPlan.cpp 
 	RecordPage.cpp Scan.cpp StatMgr.cpp SelectScan.cpp SelectPlan.cpp 
 	TableMgr.cpp TablePlan.cpp ViewMgr.cpp Index.cpp IndexMgr.cpp Term.cpp
-	blockid.h Buffer.h BufferList.h BufferMgr.h bytebuffer.h ConcurrencyMgr.h 
-	FileMgr.h ha_example.h Index.h IndexMgr.h Layout.h LockTable.h LogIterator.h LogMgr.h 
-	LogRecord.h MetadataMgr.h ProjectPlan.h ProductPlan.h
+	blockid.h Buffer.h BufferList.h BufferMgr.h bytebuffer.h CreateViewData.h 
+	CreateTableData.h CreateIndexData.h
+	ConcurrencyMgr.h DeleteData.h
+	FileMgr.h ha_example.h Index.h IndexMgr.h InsertData.h Layout.h Lexer.h LockTable.h 
+	LogIterator.h LogMgr.h 
+	LogRecord.h MetadataMgr.h ModifyData.h QueryData.h Parser.h ParserData.h ProjectPlan.h 
+	ProductPlan.h
 	RecordPage.h RecoveryMgr.h RID.h Scan.h Schema.h StatMgr.h SelectScan.h SelectPlan.h 
 	Transaction.h page.h Plan.h Predicate.h TablePlan.h
 	TableMgr.h Term.h ViewMgr.h)

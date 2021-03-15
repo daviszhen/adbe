@@ -112,6 +112,8 @@
 #include "ProductPlan.h"
 
 #include <mysql/thread_pool_priv.h>
+#include "Lexer.h"
+#include "Parser.h"
 
 static handler *example_create_handler(handlerton *hton,
                                        TABLE_SHARE *table, 
@@ -748,6 +750,638 @@ void testRecord() {
     delete locktbl;
 }
 
+void testTableScan() {
+    int blocksize = 400;
+    LockTable* locktbl = new LockTable();
+    FileMgr* fm = FileMgr::New(blocksize);
+    LogMgr* lm = LogMgr::New(fm, "simpledb.log");
+    BufferMgr* bm = BufferMgr::New(fm, lm, 8);
+
+    Transaction* tx = new Transaction(fm, lm, bm, locktbl);
+    
+    Schema* sch = new Schema();
+    sch->addIntField("A");
+    sch->addStringField("B", 9);
+    Layout* layout = new Layout(*sch);
+    for (const std::string& fldname : layout->schema().fields()) {
+        int offset = layout->offset(fldname);
+        sql_print_information("%s has offset %d\n",fldname.c_str(),offset);
+    }
+
+    sql_print_information("Filling the table with 50 random records.\n");
+    TableScan* ts = new TableScan(tx, "T", layout);
+    for (int i = 0; i < 50; i++) {
+        ts->insert();
+        int n = rand() % 50;
+        ts->setInt("A", n);
+        ts->setString("B", "rec" + std::to_string(n));
+        sql_print_information("inserting into slot %s: {%d, rec%d}\n",
+            ts->getRid().toString().c_str(),
+            n,
+            n);
+    }
+
+    sql_print_information("Deleting these records, whose A-values are less than 25.\n");
+    int count = 0;
+    ts->beforeFirst();
+    while (ts->next()) {
+        int a = ts->getInt("A");
+        std::string b = ts->getString("B");
+        if (a < 25) {
+            count++;
+            sql_print_information("slot %s: {%d, %s}\n",
+                ts->getRid().toString().c_str(),
+                a,
+                b.c_str()
+                );
+            ts->remove();
+        }
+    }
+    sql_print_information("%d values under 10 were deleted.\n",count);
+
+    sql_print_information("Here are the remaining records.\n");
+    ts->beforeFirst();
+    while (ts->next()) {
+        int a = ts->getInt("A");
+        std::string b = ts->getString("B");
+        sql_print_information("slot %s: {%d, %s}\n",
+            ts->getRid().toString().c_str(),
+            a,
+            b.c_str()
+            );
+    }
+    ts->close();
+    tx->commit();
+
+    delete fm;
+    delete lm;
+    delete bm;
+    delete locktbl;
+}
+
+void testTableMgr() {
+    int blocksize = 400;
+    LockTable* locktbl = new LockTable();
+    FileMgr* fm = FileMgr::New(blocksize);
+    LogMgr* lm = LogMgr::New(fm, "simpledb.log");
+    BufferMgr* bm = BufferMgr::New(fm, lm, 8);
+
+    Transaction* tx = new Transaction(fm, lm, bm, locktbl);
+
+    TableMgr* tm = new TableMgr(true, tx);
+
+    Schema sch;
+    sch.addIntField("A");
+    sch.addStringField("B", 9);
+    tm->createTable("MyTable", &sch, tx);
+
+    Layout* layout = tm->getLayout("MyTable", tx);
+    int size = layout->slotSize();
+    Schema& sch2 = layout->schema();
+    sql_print_information("MyTable has slot size %d\n",size);
+    sql_print_information("Its fields are:\n");
+    for (const std::string& fldname : sch2.fields()) {
+        std::string type;
+        if (sch2.type(fldname) == INTEGER)
+            type = "int";
+        else {
+            int strlen = sch2.length(fldname);
+            type = "varchar(" + std::to_string(strlen) + ")";
+        }
+        sql_print_information("%s: %s\n", fldname.c_str(), type.c_str());
+    }
+    tx->commit();
+
+    delete fm;
+    delete lm;
+    delete bm;
+    delete locktbl;
+}
+
+void testMetadataMgr() {
+    int blocksize = 400;
+    LockTable* locktbl = new LockTable();
+    FileMgr* fm = FileMgr::New(blocksize);
+    LogMgr* lm = LogMgr::New(fm, "simpledb.log");
+    BufferMgr* bm = BufferMgr::New(fm, lm, 8);
+
+    Transaction* tx = new Transaction(fm, lm, bm, locktbl);
+
+    MetadataMgr* mdm = new MetadataMgr(true, tx);
+
+    Schema sch;
+    sch.addIntField("A");
+    sch.addStringField("B", 9);
+
+    // Part 1: Table Metadata
+    mdm->createTable("MyTable", sch, tx);
+    Layout* layout = mdm->getLayout("MyTable", tx);
+    int size = layout->slotSize();
+    Schema& sch2 = layout->schema();
+    sql_print_information("MyTable has slot size %d\n",size);
+    sql_print_information("Its fields are:\n");
+    for (const std::string& fldname : sch2.fields()) {
+        std::string type;
+        if (sch2.type(fldname) == INTEGER)
+            type = "int";
+        else {
+            int strlen = sch2.length(fldname);
+            type = "varchar(" + std::to_string(strlen) + ")";
+        }
+        sql_print_information("%s:%s ", fldname.c_str(),type.c_str());
+    }
+
+    // Part 2: Statistics Metadata
+    TableScan ts(tx, "MyTable", layout);
+    for (int i = 0; i < 50; i++) {
+        ts.insert();
+        int n = rand() % 50;
+        ts.setInt("A", n);
+        ts.setString("B", "rec" + std::to_string(n));
+    }
+    StatInfo si = mdm->getStatInfo("MyTable", layout, tx);
+    sql_print_information("B(MyTable) = %d\n", si.blocksAccessed());
+    sql_print_information("R(MyTable) = %d\n", si.recordsOutput());
+    sql_print_information("V(MyTable,A) = %d\n", si.distinctValues("A"));
+    sql_print_information("V(MyTable,B) = %d\n", si.distinctValues("B"));
+
+    // Part 3: View Metadata     
+    std::string viewdef = "select B from MyTable where A = 1";
+    mdm->createView("viewA", viewdef, tx);
+    std::string v = mdm->getViewDef("viewA", tx);
+    sql_print_information("View def = %s\n", v.c_str());
+
+    // Part 4: Index Metadata
+    mdm->createIndex("indexA", "MyTable", "A", tx);
+    mdm->createIndex("indexB", "MyTable", "B", tx);
+    std::unordered_map<std::string, IndexInfo*> idxmap = mdm->getIndexInfo("MyTable", tx);
+
+    IndexInfo* ii = idxmap["A"];
+    sql_print_information("B(indexA) = %d\n" ,ii->blocksAccessed());
+    sql_print_information("R(indexA) = %d\n" ,ii->recordsOutput());
+    sql_print_information("V(indexA,A) = %d\n",ii->distinctValues("A"));
+    sql_print_information("V(indexA,B) = %d\n", ii->distinctValues("B"));
+
+    ii = idxmap["B"];
+    sql_print_information("B(indexB) = %d\n",ii->blocksAccessed());
+    sql_print_information("R(indexB) = %d\n", ii->recordsOutput());
+    sql_print_information("V(indexB,A) = %d\n", ii->distinctValues("A"));
+    sql_print_information("V(indexB,B) = %d\n", ii->distinctValues("B"));
+    tx->commit();
+
+    delete fm;
+    delete lm;
+    delete bm;
+    delete locktbl;
+    delete mdm;
+}
+
+void testCatalog() {
+    int blocksize = 400;
+    LockTable* locktbl = new LockTable();
+    FileMgr* fm = FileMgr::New(blocksize);
+    LogMgr* lm = LogMgr::New(fm, "simpledb.log");
+    BufferMgr* bm = BufferMgr::New(fm, lm, 8);
+
+    Transaction* tx = new Transaction(fm, lm, bm, locktbl);
+
+    TableMgr* tm = new TableMgr(false, tx);
+    Layout* tcatLayout = tm->getLayout("tblcat", tx);
+
+    sql_print_information("Here are all the tables and their lengths.\n");
+    TableScan* ts = new TableScan(tx, "tblcat", tcatLayout);
+    while (ts->next()) {
+        std::string tname = ts->getString("tblname");
+        int slotsize = ts->getInt("slotsize");
+        sql_print_information( "%s %d\n", tname.c_str(),slotsize);
+    }
+    ts->close();
+
+    delete ts;
+    ts = nullptr;
+
+    sql_print_information("\nHere are the fields for each table and their offsets");
+    Layout* fcatLayout = tm->getLayout("fldcat", tx);
+    ts = new TableScan(tx, "fldcat", fcatLayout);
+    while (ts->next()) {
+        std::string tname = ts->getString("tblname");
+        std::string fname = ts->getString("fldname");
+        int offset = ts->getInt("offset");
+        sql_print_information("%s %s %d\n", tname.c_str(), fname.c_str(),offset);
+    }
+    ts->close();
+
+    delete ts;
+
+    delete fm;
+    delete lm;
+    delete bm;
+    delete locktbl;
+    delete tm;
+}
+
+void testProduct() {
+    int blocksize = 400;
+    LockTable* locktbl = new LockTable();
+    FileMgr* fm = FileMgr::New(blocksize);
+    LogMgr* lm = LogMgr::New(fm, "simpledb.log");
+    BufferMgr* bm = BufferMgr::New(fm, lm, 8);
+
+    Transaction* tx = new Transaction(fm, lm, bm, locktbl);
+
+    Schema sch1;
+    sch1.addIntField("A");
+    sch1.addStringField("B", 9);
+    Layout* layout1 = new Layout(sch1);
+    TableScan* ts1 = new TableScan(tx, "T1", layout1);
+
+    Schema sch2;
+    sch2.addIntField("C");
+    sch2.addStringField("D", 9);
+    Layout* layout2 = new Layout(sch2);
+    TableScan* ts2 = new TableScan(tx, "T2", layout2);
+
+    ts1->beforeFirst();
+    int n = 200;
+    sql_print_information("Inserting %d records into T1.\n", n);
+    for (int i = 0; i < n; i++) {
+        ts1->insert();
+        ts1->setInt("A", i);
+        ts1->setString("B", "aaa" + std::to_string(i));
+    }
+    ts1->close();
+
+    ts2->beforeFirst();
+    sql_print_information("Inserting %d records into T2.\n",n);
+    for (int i = 0; i < n; i++) {
+        ts2->insert();
+        ts2->setInt("C", n - i - 1);
+        ts2->setString("D", "bbb" + std::to_string(n - i - 1));
+    }
+    ts2->close();
+
+    Scan* s1 = new TableScan(tx, "T1", layout1);
+    Scan* s2 = new TableScan(tx, "T2", layout2);
+    Scan* s3 = new ProductScan(s1, s2);
+    while (s3->next())
+        sql_print_information("%s\n",s3->getString("B").c_str());
+    s3->close();
+    tx->commit();
+
+    delete fm;
+    delete lm;
+    delete bm;
+    delete locktbl;
+}
+
+void testScan1() {
+    int blocksize = 400;
+    LockTable* locktbl = new LockTable();
+    FileMgr* fm = FileMgr::New(blocksize);
+    LogMgr* lm = LogMgr::New(fm, "simpledb.log");
+    BufferMgr* bm = BufferMgr::New(fm, lm, 8);
+
+    Transaction* tx = new Transaction(fm, lm, bm, locktbl);
+
+    Schema sch1;
+    sch1.addIntField("A");
+    sch1.addStringField("B", 9);
+    Layout* layout = new Layout(sch1);
+    UpdateScan* s1 = new TableScan(tx, "T", layout);
+
+    s1->beforeFirst();
+    int n = 200;
+    sql_print_information("Inserting %d random records.\n",n);
+    for (int i = 0; i < n; i++) {
+        s1->insert();
+        int k = rand() % 50;
+        s1->setInt("A", k);
+        s1->setString("B", "rec" + std::to_string(k));
+    }
+    s1->close();
+
+    Scan* s2 = new TableScan(tx, "T", layout);
+    // selecting all records where A=10
+    Constant* c = new Constant(10);
+    Term* t = new Term(new Expression("A"), new Expression(c));
+    Predicate* pred = new Predicate(t);
+    sql_print_information("The predicate is %s\n",pred->toString().c_str());
+    Scan* s3 = new SelectScan(s2, pred);
+    std::list<std::string> fields = { "B" };
+    Scan* s4 = new ProjectScan(s3, fields);
+    while (s4->next())
+        sql_print_information("%s\n",s4->getString("B").c_str());
+    s4->close();
+    tx->commit();
+
+    delete fm;
+    delete lm;
+    delete bm;
+    delete locktbl;
+}
+
+void testScan2() {
+    int blocksize = 400;
+    LockTable* locktbl = new LockTable();
+    FileMgr* fm = FileMgr::New(blocksize);
+    LogMgr* lm = LogMgr::New(fm, "simpledb.log");
+    BufferMgr* bm = BufferMgr::New(fm, lm, 8);
+
+    Transaction* tx = new Transaction(fm, lm, bm, locktbl);
+
+    Schema sch1;
+    sch1.addIntField("A");
+    sch1.addStringField("B", 9);
+    Layout* layout1 = new Layout(sch1);
+    UpdateScan* us1 = new TableScan(tx, "T1", layout1);
+    us1->beforeFirst();
+    int n = 200;
+    sql_print_information("Inserting %d records into T1.\n",n);
+    for (int i = 0; i < n; i++) {
+        us1->insert();
+        us1->setInt("A", i);
+        us1->setString("B", "bbb" + std::to_string(i));
+    }
+    us1->close();
+
+    Schema sch2;
+    sch2.addIntField("C");
+    sch2.addStringField("D", 9);
+    Layout* layout2 = new Layout(sch2);
+    UpdateScan* us2 = new TableScan(tx, "T2", layout2);
+    us2->beforeFirst();
+    sql_print_information("Inserting %d records into T2.\n",n);
+    for (int i = 0; i < n; i++) {
+        us2->insert();
+        us2->setInt("C", n - i - 1);
+        us2->setString("D", "ddd" + std::to_string(n - i - 1));
+    }
+    us2->close();
+
+    Scan* s1 = new TableScan(tx, "T1", layout1);
+    Scan* s2 = new TableScan(tx, "T2", layout2);
+    Scan* s3 = new ProductScan(s1, s2);
+    // selecting all records where A=C
+    Term* t = new Term(new Expression("A"), new Expression("C"));
+    Predicate* pred = new Predicate(t);
+    sql_print_information("The predicate is %s\n", pred->toString().c_str());
+    Scan* s4 = new SelectScan(s3, pred);
+
+    // projecting on [B,D]
+    std::list<std::string> c = { "B", "D" };
+    Scan* s5 = new ProjectScan(s4, c);
+    while (s5->next())
+        sql_print_information("%s %s" , s5->getString("B").c_str(), s5->getString("D").c_str());
+    s5->close();
+    tx->commit();
+
+    delete fm;
+    delete lm;
+    delete bm;
+    delete locktbl;
+}
+
+void printStats(int n, Plan* p) {
+    sql_print_information("Here are the stats for plan p %d",n);
+    sql_print_information("\tR(p%d): %d",n,p->recordsOutput());
+    sql_print_information("\tB(p%d): %d",n,p->blocksAccessed());
+    sql_print_information("\n");
+}
+
+struct student_info {
+    int sid;
+    const char* sname;
+    int gradyear;
+    int majorid;
+};
+
+struct dept_info {
+    int did;
+    const char* dname;
+};
+
+void createStudentTable(MetadataMgr* mdm, Transaction* tx) {
+    Schema sch;
+    sch.addIntField("sid");
+    sch.addStringField("sname", 16);
+    sch.addIntField("gradyear");
+    sch.addIntField("majorid");
+
+    std::vector<student_info> table = {
+        {1,"joe",2004,10},
+        {2,"amy",2004,20},
+        {3,"max",2005,10},
+        {4,"sue",2005,20},
+        {5,"bob",2003,30},
+        {6,"kim",2001,20},
+        {7,"art",2004,30},
+        {8,"pat",2001,20},
+        {9,"lee",2004,10},
+    };
+    mdm->createTable("student", sch, tx);
+    Layout* layout = mdm->getLayout("student", tx);
+    UpdateScan* us = new TableScan(tx, "student", layout);
+    us->beforeFirst();
+    sql_print_information("Inserting %d records into student.\n", table.size());
+    for (int i = 0; i < table.size(); i++) {
+        student_info& info = table[i];
+        us->insert();
+        us->setInt("sid", info.sid);
+        us->setString("sname", info.sname);
+        us->setInt("gradyear", info.gradyear);
+        us->setInt("majorid", info.majorid);
+    }
+    us->close();
+    mdm->getStatInfo("student", layout, tx);
+}
+
+void createDeptTable(MetadataMgr* mdm, Transaction* tx) {
+    Schema sch;
+    sch.addIntField("did");
+    sch.addStringField("dname", 16);
+
+    std::vector<dept_info> table = {
+        {10,"compsci"},
+        {20,"math"},
+        {30,"drama"},
+    };
+    mdm->createTable("dept", sch, tx);
+    Layout* layout = mdm->getLayout("dept", tx);
+    UpdateScan* us = new TableScan(tx, "dept", layout);
+    us->beforeFirst();
+    sql_print_information("Inserting %d records into dept.\n", table.size());
+    for (int i = 0; i < table.size(); i++) {
+        dept_info& info = table[i];
+        us->insert();
+        us->setInt("did", info.did);
+        us->setString("dname", info.dname);
+    }
+    us->close();
+    mdm->getStatInfo("dept", layout, tx);
+}
+
+void testSingleTablePlan() {
+    int blocksize = 400;
+    LockTable* locktbl = new LockTable();
+    FileMgr* fm = FileMgr::New(blocksize);
+    LogMgr* lm = LogMgr::New(fm, "simpledb.log");
+    BufferMgr* bm = BufferMgr::New(fm, lm, 8);
+
+    Transaction* tx = new Transaction(fm, lm, bm, locktbl);
+    MetadataMgr* mdm = new MetadataMgr(true, tx);
+
+    createStudentTable(mdm, tx);    
+
+    //the STUDENT node
+    Plan* p1 = new TablePlan(tx, "student", mdm);
+
+    // the Select node for "major = 10"
+    Term* t = new Term(new Expression("majorid"), new Expression(new Constant(10)));
+    Predicate* pred = new Predicate(t);
+    Plan* p2 = new SelectPlan(p1, pred);
+
+    // the Select node for "gradyear = 2020"
+    Term* t2 = new Term(new Expression("gradyear"), new Expression(new Constant(2020)));
+    Predicate* pred2 = new Predicate(t2);
+    Plan* p3 = new SelectPlan(p2, pred2);
+
+    // the Project node
+    std::list<std::string> c = { "sname", "majorid", "gradyear" };
+    Plan* p4 = new ProjectPlan(p3, c);
+
+    // Look at R(p) and B(p) for each plan p.
+    printStats(1, p1); printStats(2, p2); printStats(3, p3); printStats(4, p4);
+
+    // Change p2 to be p2, p3, or p4 to see the other scans in action.
+    // Changing p2 to p4 will throw an exception because SID is not in the projection list.
+    Scan* s = p2->open();
+    while (s->next())
+        sql_print_information("%d %s %d %d\n",
+            s->getInt("sid"), s->getString("sname").c_str(),
+            s->getInt("majorid"), s->getInt("gradyear"));
+    s->close();
+
+    delete fm;
+    delete lm;
+    delete bm;
+    delete locktbl;
+    delete mdm;
+}
+
+void testMultiTablePlan() {
+    int blocksize = 400;
+    LockTable* locktbl = new LockTable();
+    FileMgr* fm = FileMgr::New(blocksize);
+    LogMgr* lm = LogMgr::New(fm, "simpledb.log");
+    BufferMgr* bm = BufferMgr::New(fm, lm, 8);
+
+    Transaction* tx = new Transaction(fm, lm, bm, locktbl);
+    MetadataMgr* mdm = new MetadataMgr(true, tx);
+
+    createStudentTable(mdm, tx);
+
+    createDeptTable(mdm,tx);
+
+    //the STUDENT node
+    Plan* p1 = new TablePlan(tx, "student", mdm);
+#if 0    
+    Scan* s1 = p1->open();
+    while (s1->next()) {
+        sql_print_information("++++%d %s %d %d\n",
+            s1->getInt("sid"), s1->getString("sname").c_str(),
+            s1->getInt("majorid"), s1->getInt("gradyear"));
+    }
+    s1->close();
+#endif
+
+    //the DEPT node
+    Plan* p2 = new TablePlan(tx, "dept", mdm);
+#if 0
+    Scan* s2 = p2->open();
+    while (s2->next()) {
+        sql_print_information("----%d %s\n",
+            s2->getInt("did"), s2->getString("dname").c_str());
+    }
+    s2->close();
+#endif
+
+    //the Product node for student x dept
+    Plan* p3 = new ProductPlan(p1, p2);
+
+    // the Select node for "majorid = did"
+    Term* t = new Term(new Expression("majorid"), new Expression("did"));
+    Predicate* pred = new Predicate(t);
+    Plan* p4 = new SelectPlan(p3, pred);
+
+    // Look at R(p) and B(p) for each plan p.
+    printStats(1, p1); printStats(2, p2); printStats(3, p3); printStats(4, p4);
+
+    // Change p3 to be p4 to see the select scan in action.
+    Scan* s = p3->open();
+    while (s->next())
+        sql_print_information("%s %s\n", 
+            s->getString("sname").c_str(), 
+            s->getString("dname").c_str());
+    s->close();
+
+    delete fm;
+    delete lm;
+    delete bm;
+    delete locktbl;
+    delete mdm;
+}
+
+void testLexer() {
+    //"id = c" or "c = id"
+    const char* inputs[3] = {
+        "wo = 124",
+        "122 = wx",
+        "xxx = 10"
+    };
+    for (auto line : inputs) {
+        Lexer lex(line);
+        std::string x; int y;
+        if (lex.matchId()) {
+            x = lex.eatId();
+            lex.eatDelim('=');
+            y = lex.eatIntConstant();
+        }
+        else {
+            y = lex.eatIntConstant();
+            lex.eatDelim('=');
+            x = lex.eatId();
+        }
+        sql_print_information("%s",(x + " equals " + std::to_string(y)).c_str());
+    }
+}
+
+void testParser() {
+    sql_print_information("Enter an SQL statement: ");
+    std::string inputs[] = {
+        "create view course_id_title_view as select cid,title from course",
+        "create table course(cid INT,title VARCHAR(16),deptid INT)",
+        "select sid,sname,gradyear,majorid from student,dept where majorid = did",
+        "insert into student (sid,sname) values (123,'123')",
+        "delete from student where sid = 124 and sname = '124'",
+        "update student set sname = '125' where sid = 125",
+        
+        
+        "create index course_id on course(cid)"
+    };
+    for (auto line : inputs) {
+        Parser* p = new Parser(line);
+        if (line.find("select") == 0) {
+           QueryData *q =  p->query();
+           sql_print_information("%s", q->toString().c_str());
+        }
+        else {
+            ParserData* pd = p->updateCmd();
+            sql_print_information("%s", pd->toString().c_str());
+        }
+        delete p;
+    }
+}
+
 #ifdef HAVE_PSI_INTERFACE
 static PSI_mutex_key adbe_logMgr_mutex;
 
@@ -802,7 +1436,18 @@ static int example_init_func(void *p)
   //testConcurrency();
   //testPrintLogFile();
   //testLayout();
-  testRecord();
+  //testRecord();
+  //testTableScan();
+  //testTableMgr();
+  //testMetadataMgr();
+  //testCatalog();
+  //testProduct();
+  //testScan1();
+  //testScan2();
+  //testSingleTablePlan();
+  //testMultiTablePlan();
+  //testLexer();
+  testParser();
 
   Transaction::deinit();
   DBUG_RETURN(0);

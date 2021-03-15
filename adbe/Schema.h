@@ -18,6 +18,18 @@ struct FieldInfo {
         this->type = type;
         this->length = length;
     }
+
+    std::string toString() {
+        if (type == VARCHAR) {
+            return "varchar(" + std::to_string(length) + ")";
+        }
+        else if(type == INTEGER){
+            return "int";
+        }
+        else {
+            return "invalid_type";
+        }
+    }
 };
 
 //记录的schema. 字段的名称，类型，varchar字段的长度
@@ -66,6 +78,14 @@ public:
 
     int length(const std::string& fldname) {
         return info[fldname].length;
+    }
+
+    std::string toString() {
+        std::string ans("Schema:");
+        for (auto& t : _fields) {
+            ans += t + "," + info[t].toString() + ",";
+        }
+        return ans;
     }
 private:
 	std::list<std::string> _fields;
